@@ -32,15 +32,12 @@ public class GameService {
     private final PlayerRepository playerRepository;
     private final GameStatsRepository gameStatsRepository;
 
-
     @Transactional
     public GameDTO createGame(CreateGameRequest request) {
-        // Validation
         if (request.getPlayer1Name() == null || request.getPlayer2Name() == null) {
             throw new IllegalArgumentException("Player names cannot be null");
         }
 
-        // 1. Create or find players
         PlayerEntity player1 = playerRepository.findByName(request.getPlayer1Name())
                 .orElseGet(() -> {
                     PlayerEntity p = new PlayerEntity();
@@ -59,33 +56,109 @@ public class GameService {
                     return playerRepository.save(p); // Changed to save()
                 });
 
-        // 2. Create game
         GameEntity game = new GameEntity();
         game.setStartTime(LocalDateTime.now());
 
-        // 3. Create stats
         GameStatsEntity stats1 = new GameStatsEntity();
         stats1.setPlayer(player1);
-        stats1.setGame(game); // Bidirectional relationship
+        stats1.setGame(game);
         stats1.setPiecesRemaining(12);
         stats1.setScore(0);
 
         GameStatsEntity stats2 = new GameStatsEntity();
         stats2.setPlayer(player2);
-        stats2.setGame(game); // Bidirectional relationship
+        stats2.setGame(game);
         stats2.setPiecesRemaining(12);
         stats2.setScore(0);
 
-        // Add stats to game (using the mutable collection)
         game.getGameStats().add(stats1);
         game.getGameStats().add(stats2);
 
-        // Single save operation
         game = gameRepository.saveAndFlush(game);
-
         return convertToDto(game);
     }
 
+    @Transactional
+    public GameDTO createGame(GameDTO gameDTO) {
+        if (gameDTO.getGameStats() == null || gameDTO.getGameStats().size() != 2) {
+            throw new IllegalArgumentException("Game must have exactly 2 players");
+        }
+
+        GameEntity game = new GameEntity();
+        game.setStartTime(gameDTO.getStartTime() != null ?
+                gameDTO.getStartTime() : LocalDateTime.now());
+        game.setEndTime(gameDTO.getEndTime());
+        game.setWinnerName(gameDTO.getWinnerName());
+        game.setWinnerColor(gameDTO.getWinnerColor());
+
+        for (GameStatsDTO statsDTO : gameDTO.getGameStats()) {
+            if (statsDTO.getPlayer() == null) {
+                throw new IllegalArgumentException("Player cannot be null");
+            }
+
+            if (statsDTO.getPlayer().getColor() == null) {
+                statsDTO.getPlayer().setColor("#000000"); // default
+            }
+
+            PlayerEntity player = playerRepository.findById(statsDTO.getPlayer().getId())
+                    .orElseGet(() -> {
+                        PlayerEntity newPlayer = new PlayerEntity();
+                        newPlayer.setName(statsDTO.getPlayer().getName());
+                        newPlayer.setColor(statsDTO.getPlayer().getColor());
+                        newPlayer.setTop(statsDTO.getPlayer().isTop());
+                        return playerRepository.save(newPlayer);
+                    });
+
+            GameStatsEntity gameStats = new GameStatsEntity();
+            gameStats.setPlayer(player);
+            gameStats.setGame(game);
+            gameStats.setScore(statsDTO.getScore());
+            gameStats.setPiecesRemaining(statsDTO.getPiecesRemaining());
+
+            game.getGameStats().add(gameStats);
+        }
+
+        return new GameDTO(gameRepository.save(game));
+    }
+
+    public GameDTO updateGame(Long id, GameDTO gameDTO) {
+        GameEntity existingGame = gameRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found with id: " + id));
+
+        existingGame.setStartTime(gameDTO.getStartTime());
+        existingGame.setEndTime(gameDTO.getEndTime());
+        existingGame.setWinnerName(gameDTO.getWinnerName());
+        existingGame.setWinnerColor(gameDTO.getWinnerColor());
+
+        if (gameDTO.getGameStats() != null && gameDTO.getGameStats().size() == 2) {
+            // clear existing stats to avoid duplicates (they will be recreated)
+            existingGame.getGameStats().clear();
+            gameStatsRepository.deleteById(existingGame.getId());
+
+            for (GameStatsDTO statsDTO : gameDTO.getGameStats()) {
+                if (statsDTO.getPlayer() == null) {
+                    throw new IllegalArgumentException("Player cannot be null");
+                }
+
+                PlayerEntity player = playerRepository.findById(statsDTO.getPlayer().getId())
+                        .orElseThrow(() -> new EntityNotFoundException(
+                                "Player not found with id: " + statsDTO.getPlayer().getId()));
+
+                GameStatsEntity gameStats = new GameStatsEntity();
+                gameStats.setPlayer(player);
+                gameStats.setGame(existingGame);
+                gameStats.setScore(statsDTO.getScore());
+                gameStats.setPiecesRemaining(statsDTO.getPiecesRemaining());
+
+                existingGame.getGameStats().add(gameStats);
+            }
+        } else {
+            throw new IllegalArgumentException("Game must have exactly 2 players");
+        }
+
+        GameEntity updatedGame = gameRepository.save(existingGame);
+        return convertToDto(updatedGame);
+    }
 
     private GameDTO convertToDto(GameEntity game) {
         GameDTO dto = new GameDTO();
@@ -140,14 +213,6 @@ public class GameService {
         playerDto.setColor(player.getColor());
         playerDto.setTop(player.isTop());
         return playerDto;
-    }
-
-    private PlayerEntity createNewPlayer(String name, String color, boolean isTop) {
-        PlayerEntity player = new PlayerEntity();
-        player.setName(name);
-        player.setColor(color);
-        player.setTop(isTop);
-        return playerRepository.save(player);
     }
 
     public GameStatsEntity createGameStats(PlayerEntity player, GameEntity game, int initialPieces) {
